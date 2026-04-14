@@ -1,5 +1,5 @@
 import { useState, useCallback } from 'react';
-import { ScanSearch, Play, Download, Trash2 } from 'lucide-react';
+import { FileSpreadsheet, Play, Download, Trash2, Sparkles } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { DropZone } from '@/components/ocr/DropZone';
 import { ImagePreviewList } from '@/components/ocr/ImagePreviewList';
@@ -57,25 +57,54 @@ export default function OCRExtractor() {
       return;
     }
     exportToExcel(validRecords);
-    toast({ title: 'Excel exportado!', description: 'O arquivo foi baixado.' });
+    toast({ title: 'Excel exportado com sucesso!', description: 'O arquivo foi baixado.' });
   }, [records, toast]);
 
   return (
-    <div className="min-h-screen bg-background">
+    <div className="min-h-screen gradient-hero">
       {/* Header */}
-      <header className="border-b border-border bg-card/50 backdrop-blur-sm sticky top-0 z-20">
-        <div className="container mx-auto flex items-center gap-3 px-4 py-4">
-          <div className="rounded-lg gradient-primary p-2">
-            <ScanSearch className="h-6 w-6 text-primary-foreground" />
+      <header className="sticky top-0 z-20 border-b border-border/60 glass">
+        <div className="container mx-auto flex items-center justify-between px-4 py-3">
+          <div className="flex items-center gap-3">
+            <div className="relative">
+              <div className="absolute inset-0 rounded-xl gradient-primary blur-md opacity-50" />
+              <div className="relative rounded-xl gradient-primary p-2.5 shadow-lg">
+                <FileSpreadsheet className="h-6 w-6 text-white" />
+              </div>
+            </div>
+            <div>
+              <h1 className="text-lg font-bold tracking-tight">
+                <span className="gradient-text">Imagem para Excel</span>{' '}
+                <span className="text-foreground/90">LeadCompra</span>
+              </h1>
+              <p className="text-xs text-muted-foreground leading-tight">
+                Extraia nomes e telefones de imagens automaticamente
+              </p>
+            </div>
           </div>
-          <div>
-            <h1 className="text-xl font-bold text-foreground">Imagem Para Pdf Leadcompra</h1>
-            <p className="text-xs text-muted-foreground">Extraia nomes e telefones de imagens automaticamente</p>
+
+          <div className="hidden sm:flex items-center gap-1.5 rounded-full border border-primary/20 bg-primary/5 px-3 py-1.5">
+            <Sparkles className="h-3.5 w-3.5 text-primary" />
+            <span className="text-xs font-medium text-primary">OCR com IA</span>
           </div>
         </div>
       </header>
 
-      <main className="container mx-auto max-w-5xl space-y-8 px-4 py-8">
+      <main className="container mx-auto max-w-5xl px-4 py-10 space-y-8">
+        {/* Hero text */}
+        {!files.length && !records.length && (
+          <div className="text-center space-y-3 pb-2">
+            <h2 className="text-3xl sm:text-4xl font-bold tracking-tight">
+              <span className="gradient-text">Transforme imagens</span>
+              <br />
+              <span className="text-foreground/80">em planilhas Excel</span>
+            </h2>
+            <p className="text-muted-foreground text-base max-w-md mx-auto">
+              Faça upload das suas imagens, extraímos os dados automaticamente e geramos um Excel pronto para usar.
+            </p>
+          </div>
+        )}
+
         {/* Upload */}
         <DropZone onFilesSelected={handleFilesSelected} disabled={isProcessing} />
 
@@ -85,14 +114,17 @@ export default function OCRExtractor() {
         {/* Actions */}
         {files.length > 0 && !isProcessing && (
           <div className="flex gap-3 flex-wrap">
-            <Button onClick={handleProcess} className="gradient-primary text-primary-foreground gap-2 px-6">
+            <Button
+              onClick={handleProcess}
+              className="gradient-primary text-white gap-2 px-6 py-2.5 font-semibold shadow-lg hover:opacity-90 hover:shadow-primary/20 hover:shadow-xl transition-all duration-200"
+            >
               <Play className="h-4 w-4" />
               Processar {files.length} {files.length === 1 ? 'imagem' : 'imagens'}
             </Button>
             <Button
               variant="outline"
               onClick={() => { setFiles([]); setRecords([]); }}
-              className="gap-2"
+              className="gap-2 border-border/60 hover:bg-destructive/10 hover:border-destructive/40 hover:text-destructive transition-all duration-200"
             >
               <Trash2 className="h-4 w-4" /> Limpar tudo
             </Button>
@@ -110,17 +142,27 @@ export default function OCRExtractor() {
 
         {/* Results */}
         {!isProcessing && records.length > 0 && (
-          <>
+          <div className="space-y-6">
             <DataTable records={records} />
             <div className="flex justify-end">
-              <Button onClick={handleExport} className="gap-2 bg-success/90 hover:bg-success text-primary-foreground">
+              <Button
+                onClick={handleExport}
+                className="gap-2 gradient-primary text-white font-semibold px-6 py-2.5 shadow-lg hover:opacity-90 hover:shadow-primary/20 hover:shadow-xl transition-all duration-200"
+              >
                 <Download className="h-4 w-4" />
                 Exportar para Excel
               </Button>
             </div>
-          </>
+          </div>
         )}
       </main>
+
+      {/* Footer */}
+      <footer className="mt-auto border-t border-border/40 py-6">
+        <p className="text-center text-xs text-muted-foreground">
+          LeadCompra &copy; {new Date().getFullYear()} — Processamento 100% local, seus dados não saem do navegador.
+        </p>
+      </footer>
     </div>
   );
 }
