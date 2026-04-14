@@ -1,5 +1,6 @@
 import { useState, useCallback } from 'react';
-import { FileSpreadsheet, Play, Download, Trash2, Sparkles } from 'lucide-react';
+import { Play, Download, Trash2, Sparkles } from 'lucide-react';
+import logoUrl from '@/assets/logo.png';
 import { Button } from '@/components/ui/button';
 import { DropZone } from '@/components/ocr/DropZone';
 import { ImagePreviewList } from '@/components/ocr/ImagePreviewList';
@@ -67,10 +68,11 @@ export default function OCRExtractor() {
         <div className="container mx-auto flex items-center justify-between px-4 py-3">
           <div className="flex items-center gap-3">
             <div className="relative">
-              <div className="absolute inset-0 rounded-xl gradient-primary blur-md opacity-50" />
-              <div className="relative rounded-xl gradient-primary p-2.5 shadow-lg">
-                <FileSpreadsheet className="h-6 w-6 text-white" />
-              </div>
+              <img
+                src={logoUrl}
+                alt="Imagem para Excel LeadCompra"
+                className="h-11 w-11 rounded-xl object-contain drop-shadow-lg"
+              />
             </div>
             <div>
               <h1 className="text-lg font-bold tracking-tight">
