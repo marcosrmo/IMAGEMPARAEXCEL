@@ -4,14 +4,233 @@ export interface ExtractedRecord {
   id: string;
   fileName: string;
   imageUrl: string;
-  nome: string;
-  telefone: string;
-  data: string;
+  fields: Record<string, string>;
   rawText: string;
   confidence: number;
   hasError: boolean;
-  lineNumber: number;
+  blockIndex: number;
 }
+
+export type ProgressCallback = (current: number, total: number, fileName: string) => void;
+
+// ─── Normalização de texto ───────────────────────────────────────────────────
+
+function normalizeOcrText(text: string): string {
+  return text
+    .replace(/\|/g, 'l')
+    .replace(/[""]/g, '"')
+    .replace(/['']/g, "'")
+    .replace(/\s{2,}/g, ' ')
+    .replace(/[«»]/g, '')
+    .trim();
+}
+
+// ─── Mapa de sinônimos de rótulos ────────────────────────────────────────────
+
+const LABEL_SYNONYMS: Record<string, string> = {
+  // Pessoa
+  nome: 'Nome', name: 'Nome', cliente: 'Nome', comprador: 'Nome',
+  vendedor: 'Vendedor', responsavel: 'Responsável', titular: 'Titular',
+  // Contato
+  tel: 'Telefone', telefone: 'Telefone', fone: 'Telefone', celular: 'Telefone',
+  cel: 'Telefone', whatsapp: 'WhatsApp', wpp: 'WhatsApp', contato: 'Contato',
+  phone: 'Telefone', ramal: 'Ramal',
+  email: 'Email', 'e-mail': 'Email', mail: 'Email', correio: 'Email',
+  // Documentos
+  cpf: 'CPF', cnpj: 'CNPJ', rg: 'RG', documento: 'Documento', doc: 'Documento',
+  // Data/Hora
+  data: 'Data', date: 'Data', dt: 'Data', dia: 'Data',
+  prazo: 'Prazo', vencimento: 'Vencimento', entrega: 'Entrega',
+  nascimento: 'Nascimento', validade: 'Validade', hora: 'Hora',
+  // Endereço
+  endereco: 'Endereço', logradouro: 'Endereço',
+  rua: 'Rua', av: 'Avenida', avenida: 'Avenida', alameda: 'Alameda',
+  travessa: 'Travessa', estrada: 'Estrada', rodovia: 'Rodovia',
+  numero: 'Número', nro: 'Número', complemento: 'Complemento',
+  bairro: 'Bairro', distrito: 'Distrito', setor: 'Setor',
+  cidade: 'Cidade', municipio: 'Cidade', localidade: 'Cidade', city: 'Cidade',
+  estado: 'Estado', uf: 'UF', pais: 'País', country: 'País',
+  cep: 'CEP', zip: 'CEP',
+  // Produto
+  produto: 'Produto', item: 'Item', mercadoria: 'Produto', product: 'Produto',
+  cor: 'Cor', color: 'Cor', colour: 'Cor',
+  tamanho: 'Tamanho', tam: 'Tamanho', size: 'Tamanho', medida: 'Medida',
+  peso: 'Peso', largura: 'Largura', altura: 'Altura', comprimento: 'Comprimento',
+  quantidade: 'Quantidade', qtd: 'Quantidade', qt: 'Quantidade', qtde: 'Quantidade', qty: 'Quantidade',
+  valor: 'Valor', preco: 'Preço', price: 'Preço', total: 'Total',
+  subtotal: 'Subtotal', custo: 'Custo', desconto: 'Desconto', frete: 'Frete',
+  descricao: 'Descrição', obs: 'Observação', observacao: 'Observação',
+  // Identificadores
+  codigo: 'Código', cod: 'Código', code: 'Código', id: 'ID',
+  pedido: 'Pedido', ordem: 'Ordem', protocolo: 'Protocolo',
+  nota: 'Nota Fiscal', nf: 'Nota Fiscal', nfe: 'NF-e', serie: 'Série',
+  // Negócio
+  marca: 'Marca', modelo: 'Modelo', referencia: 'Referência', sku: 'SKU',
+  categoria: 'Categoria', tipo: 'Tipo', status: 'Status', situacao: 'Situação',
+  pagamento: 'Pagamento', forma: 'Forma Pagamento', parcelas: 'Parcelas',
+  banco: 'Banco', agencia: 'Agência', conta: 'Conta',
+};
+
+// Palavras-chave que podem aparecer como prefixo em linha sem separador
+const CONTEXT_KEYWORDS = new Set(Object.keys(LABEL_SYNONYMS));
+
+function removeAccents(s: string): string {
+  return s.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+}
+
+function normalizeKey(raw: string): string {
+  return removeAccents(raw.toLowerCase().trim()).replace(/[^a-z0-9]/g, '');
+}
+
+function normalizeLabel(raw: string): string {
+  const key = normalizeKey(raw);
+  if (LABEL_SYNONYMS[key]) return LABEL_SYNONYMS[key];
+  // Capitaliza a primeira letra de cada palavra
+  return raw.trim().replace(/\b\w/g, c => c.toUpperCase());
+}
+
+// ─── Detectores de padrões ───────────────────────────────────────────────────
+
+function detectPhone(text: string): string {
+  const m =
+    text.match(/\+?\d{1,3}?\s*\(?\d{2}\)?\s*\d{4,5}[-.\s]?\d{4}/g) ||
+    text.match(/\b\d{10,13}\b/g);
+  if (!m) return '';
+  const best = m.sort((a, b) => b.replace(/\D/g, '').length - a.replace(/\D/g, '').length)[0];
+  const digits = best.replace(/\D/g, '');
+  return digits.length >= 10 && digits.length <= 13 ? best.trim() : '';
+}
+
+function detectDate(text: string): string {
+  const m = text.match(/\b\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{2,4}\b/);
+  return m ? m[0] : '';
+}
+
+function detectEmail(text: string): string {
+  const m = text.match(/\b[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-z]{2,}\b/);
+  return m ? m[0] : '';
+}
+
+function detectCPF(text: string): string {
+  const m = text.match(/\b\d{3}\.?\d{3}\.?\d{3}[-.]?\d{2}\b/g);
+  if (!m) return '';
+  const valid = m.find(v => v.replace(/\D/g, '').length === 11);
+  return valid || '';
+}
+
+function detectCNPJ(text: string): string {
+  const m = text.match(/\b\d{2}\.?\d{3}\.?\d{3}\/?\.?\d{4}-?\d{2}\b/g);
+  if (!m) return '';
+  const valid = m.find(v => v.replace(/\D/g, '').length === 14);
+  return valid || '';
+}
+
+function detectCEP(text: string): string {
+  const m = text.match(/\b\d{5}-?\d{3}\b/);
+  return m ? m[0] : '';
+}
+
+function detectMoney(text: string): string {
+  const m = text.match(/R\$\s*\d{1,3}(?:\.\d{3})*(?:,\d{2})?|\d{1,3}(?:\.\d{3})*,\d{2}/);
+  return m ? m[0].trim() : '';
+}
+
+function detectName(text: string): string {
+  const m = text.match(/([A-ZÁÀÂÃÉÈÊÍÏÓÔÕÖÚÇÑ]{2,}(?:\s+[A-ZÁÀÂÃÉÈÊÍÏÓÔÕÖÚÇÑ]{2,})+)/g);
+  if (!m) return '';
+  return m
+    .map(s => s.trim())
+    .filter(s => s.length >= 5)
+    .sort((a, b) => b.length - a.length)[0] || '';
+}
+
+// ─── Extração de campos de um bloco de texto ─────────────────────────────────
+
+function extractFieldsFromBlock(block: string): Record<string, string> {
+  const fields: Record<string, string> = {};
+  const lines = block.split('\n').map(l => l.trim()).filter(l => l.length > 1);
+
+  const addField = (label: string, value: string) => {
+    const norm = normalizeLabel(label);
+    if (norm && value && !fields[norm]) {
+      fields[norm] = value.trim();
+    }
+  };
+
+  for (const line of lines) {
+    // 1. Key: Value  ou  Key = Value  (separador explícito)
+    const kvMatch = line.match(/^(.{1,50}?)\s*[:=]\s*(.+)$/);
+    if (kvMatch) {
+      const rawLabel = kvMatch[1].trim();
+      const value = kvMatch[2].trim();
+      // Evita rótulos que são apenas números ou muito longos
+      if (rawLabel.length >= 1 && rawLabel.length <= 40 && !/^\d+$/.test(rawLabel)) {
+        addField(rawLabel, value);
+        continue;
+      }
+    }
+
+    // 2. Padrões automáticos sem rótulo explícito
+    const phone = detectPhone(line);
+    if (phone && !fields['Telefone']) { fields['Telefone'] = phone; continue; }
+
+    const cnpj = detectCNPJ(line);
+    if (cnpj && !fields['CNPJ']) { fields['CNPJ'] = cnpj; continue; }
+
+    const cpf = detectCPF(line);
+    if (cpf && !fields['CPF']) { fields['CPF'] = cpf; continue; }
+
+    const cep = detectCEP(line);
+    if (cep && !fields['CEP']) { fields['CEP'] = cep; continue; }
+
+    const email = detectEmail(line);
+    if (email && !fields['Email']) { fields['Email'] = email; continue; }
+
+    const money = detectMoney(line);
+    if (money && !fields['Valor']) { fields['Valor'] = money; continue; }
+
+    const date = detectDate(line);
+    if (date && !fields['Data']) { fields['Data'] = date; continue; }
+
+    // 3. Keyword no início da linha sem separador: "cor preta" → Cor: preta
+    const keywordMatch = line.match(/^([a-záàâãéèêíïóôõöúçñ]{2,20})\s+(.{1,80})$/i);
+    if (keywordMatch) {
+      const kw = normalizeKey(keywordMatch[1]);
+      if (CONTEXT_KEYWORDS.has(kw)) {
+        const label = normalizeLabel(keywordMatch[1]);
+        const value = keywordMatch[2].trim();
+        if (!fields[label]) addField(keywordMatch[1], value);
+        continue;
+      }
+    }
+  }
+
+  // 4. Nome em maiúsculas se não detectado ainda
+  if (!fields['Nome']) {
+    const name = detectName(block);
+    if (name) fields['Nome'] = name;
+  }
+
+  return fields;
+}
+
+// ─── Divisão em blocos de registros ─────────────────────────────────────────
+
+function splitIntoBlocks(text: string): string[] {
+  // Divide em blocos por linhas vazias ou separadores (---, ===, ___)
+  const parts = text.split(/\n{2,}|[-=_]{3,}/);
+  const blocks = parts.map(p => p.trim()).filter(p => p.length > 3);
+
+  // Se há apenas 1 bloco mas com padrões repetidos (ex: vários nomes/telefones),
+  // tenta sub-dividir linha a linha agrupando por setor
+  if (blocks.length === 1) {
+    return [blocks[0]];
+  }
+
+  return blocks;
+}
+
+// ─── Pré-processamento de imagem ─────────────────────────────────────────────
 
 function preprocessImage(file: File): Promise<string> {
   return new Promise((resolve) => {
@@ -23,7 +242,6 @@ function preprocessImage(file: File): Promise<string> {
       const scale = Math.max(1, 2000 / Math.max(img.width, img.height));
       canvas.width = img.width * scale;
       canvas.height = img.height * scale;
-
       ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
 
       const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
@@ -45,141 +263,7 @@ function preprocessImage(file: File): Promise<string> {
   });
 }
 
-interface ParsedLine {
-  nome: string;
-  telefone: string;
-  data: string;
-  rawLine: string;
-}
-
-/**
- * Normaliza texto OCR: corrige espaços extras, caracteres comuns mal lidos
- */
-function normalizeOcrText(text: string): string {
-  return text
-    .replace(/\|/g, 'l')
-    .replace(/[""]/g, '"')
-    .replace(/['']/g, "'")
-    .replace(/\s{2,}/g, ' ');
-}
-
-/**
- * Extrai telefone de uma string.
- * Aceita formatos como:
- *   (11) 99999-9999, (11)99999-9999, 11 99999-9999, 11999999999,
- *   +55 11 99999-9999, 55 11 999999999, 9999-9999, 99999-9999
- *   e sequências de 10-13 dígitos
- */
-function extractPhone(text: string): string {
-  // Formato com parênteses: (DD) NNNNN-NNNN
-  const withParens = text.match(/\(?\d{2}\)?\s*\d{4,5}[-.\s]?\d{4}/g);
-  if (withParens) {
-    // Retorna o que tiver mais dígitos (mais completo)
-    const best = withParens.sort((a, b) => b.replace(/\D/g, '').length - a.replace(/\D/g, '').length)[0];
-    const digits = best.replace(/\D/g, '');
-    if (digits.length >= 10 && digits.length <= 13) return best.trim();
-  }
-
-  // Sequência de 10-13 dígitos (telefone puro)
-  const rawDigits = text.match(/\b\d{10,13}\b/g);
-  if (rawDigits) {
-    return rawDigits[0];
-  }
-
-  // Formato com +55
-  const intl = text.match(/\+?\d{2}\s*\(?\d{2}\)?\s*\d{4,5}[-.\s]?\d{4}/g);
-  if (intl) {
-    return intl[0].trim();
-  }
-
-  return '';
-}
-
-/**
- * Extrai nome (sequência de palavras em maiúsculas, mín 2 palavras, mín 5 chars)
- */
-function extractName(text: string): string {
-  const matches = text.match(/([A-ZÁÀÂÃÉÈÊÍÏÓÔÕÖÚÇÑ]{2,}(?:\s+[A-ZÁÀÂÃÉÈÊÍÏÓÔÕÖÚÇÑ]{2,})+)/g);
-  if (!matches) return '';
-  const filtered = matches
-    .map(m => m.trim())
-    .filter(m => m.length >= 5)
-    .sort((a, b) => b.length - a.length);
-  return filtered[0] || '';
-}
-
-function extractAllRecords(text: string): ParsedLine[] {
-  const normalized = normalizeOcrText(text);
-  const lines = normalized.split('\n').map(l => l.trim()).filter(l => l.length > 0);
-  const records: ParsedLine[] = [];
-
-  const dataRegex = /\b(\d{2}\/\d{2}\/\d{4})\b/g;
-
-  for (const line of lines) {
-    const nome = extractName(line);
-    const telefone = extractPhone(line);
-    const dataMatch = line.match(dataRegex);
-    const data = dataMatch ? dataMatch[0] : '';
-
-    if (nome || telefone) {
-      records.push({ nome, telefone, data, rawLine: line });
-    }
-  }
-
-  // Se linha-a-linha não encontrou nada, tente agrupar nome+telefone por proximidade
-  if (records.length === 0) {
-    const allNomes: { value: string; index: number }[] = [];
-    const allPhones: { value: string; index: number }[] = [];
-
-    const nomeRegex = /([A-ZÁÀÂÃÉÈÊÍÏÓÔÕÖÚÇÑ]{2,}(?:\s+[A-ZÁÀÂÃÉÈÊÍÏÓÔÕÖÚÇÑ]{2,})+)/g;
-    let match: RegExpExecArray | null;
-
-    while ((match = nomeRegex.exec(normalized)) !== null) {
-      if (match[1].trim().length >= 5) {
-        allNomes.push({ value: match[1].trim(), index: match.index });
-      }
-    }
-
-    // Busca telefones no texto todo
-    const phonePatterns = [
-      /\(?\d{2}\)?\s*\d{4,5}[-.\s]?\d{4}/g,
-      /\b\d{10,13}\b/g,
-    ];
-    for (const pattern of phonePatterns) {
-      while ((match = pattern.exec(normalized)) !== null) {
-        const digits = match[0].replace(/\D/g, '');
-        if (digits.length >= 10 && digits.length <= 13) {
-          allPhones.push({ value: match[0].trim(), index: match.index });
-        }
-      }
-    }
-
-    for (const n of allNomes) {
-      const closestPhone = allPhones
-        .filter(p => p.index > n.index)
-        .sort((a, b) => a.index - b.index)[0];
-      const closestData = normalized.slice(n.index).match(/\b(\d{2}\/\d{2}\/\d{4})\b/);
-
-      records.push({
-        nome: n.value,
-        telefone: closestPhone?.value || '',
-        data: closestData ? closestData[1] : '',
-        rawLine: '',
-      });
-    }
-  }
-
-  // Deduplica por nome+telefone
-  const seen = new Set<string>();
-  return records.filter(r => {
-    const key = `${r.nome}|${r.telefone}`;
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
-}
-
-export type ProgressCallback = (current: number, total: number, fileName: string) => void;
+// ─── Worker Tesseract ────────────────────────────────────────────────────────
 
 let workerInstance: Worker | null = null;
 
@@ -190,11 +274,13 @@ async function getWorker(): Promise<Worker> {
   return workerInstance;
 }
 
+// ─── Processamento principal ─────────────────────────────────────────────────
+
 export async function processImages(
   files: File[],
   onProgress: ProgressCallback
 ): Promise<ExtractedRecord[]> {
-  const records: ExtractedRecord[] = [];
+  const allRecords: ExtractedRecord[] = [];
   const worker = await getWorker();
 
   for (let i = 0; i < files.length; i++) {
@@ -204,57 +290,58 @@ export async function processImages(
     try {
       const processedDataUrl = await preprocessImage(file);
       const { data } = await worker.recognize(processedDataUrl);
-      const parsedRecords = extractAllRecords(data.text);
+      const normalized = normalizeOcrText(data.text);
       const imageUrl = URL.createObjectURL(file);
+      const blocks = splitIntoBlocks(normalized);
 
-      if (parsedRecords.length === 0) {
-        records.push({
+      let addedAny = false;
+
+      for (let b = 0; b < blocks.length; b++) {
+        const fields = extractFieldsFromBlock(blocks[b]);
+        if (Object.keys(fields).length === 0) continue;
+
+        allRecords.push({
+          id: `${Date.now()}-${i}-${b}`,
+          fileName: file.name,
+          imageUrl,
+          fields,
+          rawText: blocks[b],
+          confidence: data.confidence,
+          hasError: false,
+          blockIndex: b + 1,
+        });
+        addedAny = true;
+      }
+
+      if (!addedAny) {
+        allRecords.push({
           id: `${Date.now()}-${i}-0`,
           fileName: file.name,
           imageUrl,
-          nome: '',
-          telefone: '',
-          data: '',
-          rawText: data.text,
+          fields: {},
+          rawText: normalized,
           confidence: data.confidence,
           hasError: true,
-          lineNumber: 0,
-        });
-      } else {
-        parsedRecords.forEach((rec, j) => {
-          records.push({
-            id: `${Date.now()}-${i}-${j}`,
-            fileName: file.name,
-            imageUrl,
-            nome: rec.nome,
-            telefone: rec.telefone,
-            data: rec.data,
-            rawText: rec.rawLine || data.text,
-            confidence: data.confidence,
-            hasError: !rec.nome && !rec.telefone,
-            lineNumber: j + 1,
-          });
+          blockIndex: 0,
         });
       }
     } catch (err) {
       console.error(`Erro ao processar ${file.name}:`, err);
-      records.push({
-        id: `${Date.now()}-${i}-0`,
+      allRecords.push({
+        id: `${Date.now()}-${i}-err`,
         fileName: file.name,
         imageUrl: URL.createObjectURL(file),
-        nome: '',
-        telefone: '',
-        data: '',
+        fields: {},
         rawText: `Erro: ${err instanceof Error ? err.message : 'Falha no OCR'}`,
         confidence: 0,
         hasError: true,
-        lineNumber: 0,
+        blockIndex: 0,
       });
     }
   }
 
   onProgress(files.length, files.length, '');
-  return records;
+  return allRecords;
 }
 
 export function terminateWorker() {
@@ -262,4 +349,33 @@ export function terminateWorker() {
     workerInstance.terminate();
     workerInstance = null;
   }
+}
+
+// ─── Utilitário: todas as colunas únicas de uma lista de registros ──────────
+
+const PRIORITY_COLUMNS = [
+  'Nome', 'CPF', 'CNPJ', 'RG', 'Telefone', 'WhatsApp', 'Contato',
+  'Email', 'Data', 'Nascimento', 'Prazo', 'Vencimento', 'Validade',
+  'Endereço', 'Rua', 'Avenida', 'Número', 'Complemento', 'Bairro',
+  'Cidade', 'UF', 'Estado', 'CEP', 'País',
+  'Produto', 'Item', 'Código', 'SKU', 'Referência', 'Marca', 'Modelo',
+  'Cor', 'Tamanho', 'Medida', 'Peso', 'Quantidade',
+  'Valor', 'Preço', 'Total', 'Subtotal', 'Desconto', 'Frete',
+  'Nota Fiscal', 'NF-e', 'Pedido', 'Protocolo',
+  'Pagamento', 'Forma Pagamento', 'Parcelas', 'Banco', 'Agência', 'Conta',
+  'Descrição', 'Observação', 'Tipo', 'Categoria', 'Status', 'Situação',
+];
+
+export function getAllColumns(records: ExtractedRecord[]): string[] {
+  const allKeys = new Set<string>();
+  for (const r of records) {
+    Object.keys(r.fields).forEach(k => allKeys.add(k));
+  }
+
+  const sorted = PRIORITY_COLUMNS.filter(p => allKeys.has(p));
+  const remaining = Array.from(allKeys)
+    .filter(k => !PRIORITY_COLUMNS.includes(k))
+    .sort((a, b) => a.localeCompare(b));
+
+  return [...sorted, ...remaining];
 }

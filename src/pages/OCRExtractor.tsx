@@ -36,9 +36,10 @@ export default function OCRExtractor() {
       });
       setRecords(results);
       const successCount = results.filter((r) => !r.hasError).length;
+      const colCount = new Set(results.flatMap(r => Object.keys(r.fields))).size;
       toast({
         title: 'Processamento concluído',
-        description: `${successCount} de ${results.length} imagens com dados extraídos.`,
+        description: `${successCount} registros extraídos com ${colCount} tipos de dados detectados.`,
       });
     } catch (err) {
       toast({
