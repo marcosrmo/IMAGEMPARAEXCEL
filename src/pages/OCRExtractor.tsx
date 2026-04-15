@@ -86,10 +86,15 @@ export default function OCRExtractor() {
             </div>
           </div>
 
-          <div className="hidden sm:flex items-center gap-1.5 rounded-full border border-primary/20 bg-primary/5 px-3 py-1.5">
+          <a
+            href="https://leadcompra.com.br"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="hidden sm:flex items-center gap-1.5 rounded-full border border-primary/20 bg-primary/5 px-3 py-1.5 hover:bg-primary/15 hover:border-primary/40 transition-all duration-200"
+          >
             <Sparkles className="h-3.5 w-3.5 text-primary" />
-            <span className="text-xs font-medium text-primary">OCR com IA</span>
-          </div>
+            <span className="text-xs font-medium text-primary">Site da Instituição</span>
+          </a>
         </div>
       </header>
 
